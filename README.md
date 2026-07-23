@@ -20,6 +20,13 @@ Routen gemeint. Nicht in OpenStreetMap eingetragene Touren können technisch
 nicht enthalten sein. Private Nutzeraufzeichnungen und eigene
 BergChronik-Touren sind ausdrücklich nicht Teil dieses Katalogs.
 
+Geofabrik schneidet Daten an Ländergrenzen zu. Bei internationalen Routen kann
+ein Länderartefakt deshalb nur den im Extrakt enthaltenen Abschnitt abbilden.
+Fehlende externe Relationsmitglieder werden als `missing_way` gekennzeichnet.
+Beim gemeinsamen Einsatz der vier Kataloge muss BergChronik gleiche
+`osm_relation_id`-Werte zusammenführen, damit eine grenzüberschreitende Route
+nicht mehrfach als Suchtreffer erscheint.
+
 ## Ergebnisse
 
 Jeder Länderjob erzeugt ein ZIP-Artefakt:
@@ -180,4 +187,3 @@ unter der Open Database License 1.0:
 
 Details stehen in [LICENSE-DATA.md](LICENSE-DATA.md). Der Programmcode steht
 unter der MIT-Lizenz.
-
