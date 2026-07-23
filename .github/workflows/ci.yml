@@ -1,0 +1,29 @@
+name: Code prüfen
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v6
+
+      - name: Python-Version anzeigen
+        run: python --version
+
+      - name: Tests ausführen
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests -v
+
+      - name: Python-Dateien kompilieren
+        run: python -m compileall -q src tests
+

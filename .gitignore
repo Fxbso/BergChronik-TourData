@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+build/
+dist/
+data/
+artifacts/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.osm.pbf
+*.zip
+

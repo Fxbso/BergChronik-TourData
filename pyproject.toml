@@ -1,0 +1,10 @@
+[project]
+name = "bergchronik-tourdata"
+version = "1.0.0"
+description = "Build a searchable hiking-route catalog from OpenStreetMap PBF extracts."
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[tool.unittest]
+start-directory = "tests"
+

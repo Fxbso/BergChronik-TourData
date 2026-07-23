@@ -1,0 +1,152 @@
+name: Wanderrouten exportieren
+
+on:
+  workflow_dispatch:
+    inputs:
+      country:
+        description: Zu verarbeitendes Land
+        required: true
+        type: choice
+        default: ALL
+        options:
+          - ALL
+          - AT
+          - DE
+          - CH
+          - IT
+      include_gpx:
+        description: Zusätzlich eine GPX-Datei pro Route erzeugen
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hiking-routes-${{ inputs.country }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.country }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        country: ${{ fromJSON(inputs.country == 'ALL' && '["AT","DE","CH","IT"]' || format('["{0}"]', inputs.country)) }}
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v6
+
+      - name: Freien Speicher prüfen
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h .
+          python --version
+          sqlite3 --version
+          zip -v | head -n 2
+
+      - name: Geofabrik-Extrakt herunterladen
+        id: download
+        shell: bash
+        env:
+          COUNTRY: ${{ matrix.country }}
+        run: |
+          set -euo pipefail
+          case "$COUNTRY" in
+            AT) slug="austria" ;;
+            DE) slug="germany" ;;
+            CH) slug="switzerland" ;;
+            IT) slug="italy" ;;
+            *) echo "Unbekanntes Land: $COUNTRY" >&2; exit 2 ;;
+          esac
+          source_url="https://download.geofabrik.de/europe/${slug}-latest.osm.pbf"
+          mkdir -p data output artifacts
+          source_file="data/${COUNTRY}.osm.pbf"
+          headers="data/${COUNTRY}.headers"
+          curl \
+            --fail \
+            --location \
+            --retry 6 \
+            --retry-delay 10 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --continue-at - \
+            --dump-header "$headers" \
+            --output "$source_file" \
+            "$source_url"
+          test -s "$source_file"
+          timestamp="$(awk 'BEGIN{IGNORECASE=1} /^last-modified:/{sub(/\r$/,""); sub(/^[^:]+:[[:space:]]*/,""); print; exit}' "$headers")"
+          if [ -z "$timestamp" ]; then
+            timestamp="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          fi
+          echo "source_timestamp=$timestamp" >> "$GITHUB_OUTPUT"
+          ls -lh "$source_file"
+          df -h .
+
+      - name: Suchdatenbank und Exporte erzeugen
+        shell: bash
+        env:
+          PYTHONPATH: src
+          COUNTRY: ${{ matrix.country }}
+          SOURCE_TIMESTAMP: ${{ steps.download.outputs.source_timestamp }}
+          INCLUDE_GPX: ${{ inputs.include_gpx }}
+        run: |
+          set -euo pipefail
+          args=(
+            build
+            --input "data/${COUNTRY}.osm.pbf"
+            --output "output/${COUNTRY}"
+            --country "$COUNTRY"
+            --source-timestamp "$SOURCE_TIMESTAMP"
+          )
+          if [ "$INCLUDE_GPX" = "true" ]; then
+            args+=(--include-gpx)
+          fi
+          python -m bergchronik_tourdata "${args[@]}"
+          rm -f "data/${COUNTRY}.osm.pbf"
+          df -h .
+
+      - name: Ergebnis prüfen
+        shell: bash
+        env:
+          COUNTRY: ${{ matrix.country }}
+        run: |
+          set -euo pipefail
+          database="output/${COUNTRY}/bergchronik-routes-${COUNTRY}.sqlite"
+          test -s "$database"
+          test -s "output/${COUNTRY}/bergchronik-routes-${COUNTRY}.geojson"
+          test -s "output/${COUNTRY}/manifest-${COUNTRY}.json"
+          integrity="$(sqlite3 "$database" 'PRAGMA integrity_check;')"
+          test "$integrity" = "ok"
+          count="$(sqlite3 "$database" 'SELECT count(*) FROM routes;')"
+          test "$count" -gt 0
+          echo "Geprüfte Routen: $count"
+
+      - name: Download-ZIP erzeugen
+        shell: bash
+        env:
+          COUNTRY: ${{ matrix.country }}
+        run: |
+          set -euo pipefail
+          (
+            cd "output/${COUNTRY}"
+            zip -9 "../../artifacts/bergchronik-routes-${COUNTRY}.zip" ./*
+          )
+          test -s "artifacts/bergchronik-routes-${COUNTRY}.zip"
+          unzip -t "artifacts/bergchronik-routes-${COUNTRY}.zip"
+          ls -lh "artifacts/bergchronik-routes-${COUNTRY}.zip"
+
+      - name: Artefakt veröffentlichen
+        uses: actions/upload-artifact@v4
+        with:
+          name: bergchronik-routes-${{ matrix.country }}
+          path: artifacts/bergchronik-routes-${{ matrix.country }}.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
