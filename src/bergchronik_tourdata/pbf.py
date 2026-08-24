@@ -105,6 +105,15 @@ def _packed(data: bytes, *, zigzag: bool = False) -> list[int]:
     return values
 
 
+def _packed_iter(data: bytes, *, zigzag: bool = False) -> Iterator[int]:
+    """Iterate packed protobuf values without materialising an entire block."""
+    view = memoryview(data)
+    offset = 0
+    while offset < len(view):
+        value, offset = _read_varint(view, offset)
+        yield _zigzag(value) if zigzag else value
+
+
 def _delta(values: list[int]) -> list[int]:
     total = 0
     decoded: list[int] = []
@@ -272,17 +281,23 @@ def _dense_nodes(
     lat_offset: int,
     lon_offset: int,
 ) -> Iterator[tuple[int, float, float]]:
-    ids: list[int] = []
-    lats: list[int] = []
-    lons: list[int] = []
+    ids = lats = lons = b""
     for number, wire_type, value in _fields(data):
         if number == 1 and wire_type == 2 and isinstance(value, bytes):
-            ids = _delta(_packed(value, zigzag=True))
+            ids = value
         elif number == 8 and wire_type == 2 and isinstance(value, bytes):
-            lats = _delta(_packed(value, zigzag=True))
+            lats = value
         elif number == 9 and wire_type == 2 and isinstance(value, bytes):
-            lons = _delta(_packed(value, zigzag=True))
-    for osm_id, lat, lon in zip(ids, lats, lons):
+            lons = value
+    osm_id = lat = lon = 0
+    for id_delta, lat_delta, lon_delta in zip(
+        _packed_iter(ids, zigzag=True),
+        _packed_iter(lats, zigzag=True),
+        _packed_iter(lons, zigzag=True),
+    ):
+        osm_id += id_delta
+        lat += lat_delta
+        lon += lon_delta
         yield (
             osm_id,
             1e-9 * (lat_offset + granularity * lat),
@@ -298,26 +313,50 @@ def _dense_tagged_nodes(
     lon_offset: int,
 ) -> Iterator[Node]:
     """Decode tagged DenseNodes; their tags use a zero-terminated key/value stream."""
-    positions = list(_dense_nodes(data, granularity, lat_offset, lon_offset))
-    key_values: list[int] = []
+    ids = lats = lons = key_values = b""
     for number, wire_type, value in _fields(data):
-        if number == 10 and wire_type == 2 and isinstance(value, bytes):
-            key_values = _packed(value)
+        if wire_type != 2 or not isinstance(value, bytes):
+            continue
+        if number == 1:
+            ids = value
+        elif number == 8:
+            lats = value
+        elif number == 9:
+            lons = value
+        elif number == 10:
+            key_values = value
 
-    offset = 0
-    for osm_id, lat, lon in positions:
+    values = iter(_packed_iter(key_values))
+    osm_id = lat = lon = 0
+    for id_delta, lat_delta, lon_delta in zip(
+        _packed_iter(ids, zigzag=True),
+        _packed_iter(lats, zigzag=True),
+        _packed_iter(lons, zigzag=True),
+    ):
+        osm_id += id_delta
+        lat += lat_delta
+        lon += lon_delta
         tags: dict[str, str] = {}
-        while offset < len(key_values) and key_values[offset] != 0:
-            if offset + 1 >= len(key_values):
-                raise PbfError("Abgeschnittene DenseNode-Tags")
-            key_index, value_index = key_values[offset], key_values[offset + 1]
+        while True:
+            try:
+                key_index = next(values)
+            except StopIteration as error:
+                raise PbfError("Abgeschnittene DenseNode-Tags") from error
+            if key_index == 0:
+                break
+            try:
+                value_index = next(values)
+            except StopIteration as error:
+                raise PbfError("Abgeschnittene DenseNode-Tags") from error
             if key_index < len(strings) and value_index < len(strings):
                 tags[strings[key_index]] = strings[value_index]
-            offset += 2
-        if offset < len(key_values):
-            offset += 1
         if tags:
-            yield Node(osm_id, lat, lon, tags)
+            yield Node(
+                osm_id,
+                1e-9 * (lat_offset + granularity * lat),
+                1e-9 * (lon_offset + granularity * lon),
+                tags,
+            )
 
 
 def _plain_node(

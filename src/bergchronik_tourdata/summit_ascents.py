@@ -5,6 +5,8 @@ import heapq
 import json
 import math
 import re
+import sqlite3
+import tempfile
 from collections import defaultdict
 from gc import collect
 from pathlib import Path
@@ -216,90 +218,130 @@ def build_all_summit_ascents(
     tile_degrees: float = 2.0,
     buffer_km: float = 20.0,
 ) -> dict[str, int]:
-    """Build local graph tiles so a country's full foot graph never enters memory."""
+    """Build summit ascents from a single PBF scan per entity type.
+
+    The temporary SQLite index keeps the country-wide footway set on disk.
+    Tiles then query that index instead of parsing the PBF file again.
+    """
     if tile_degrees < 0.5 or buffer_km < 5.0:
         raise ValueError("Kachelgröße muss mindestens 0,5 Grad und Puffer mindestens 5 km sein.")
 
+    print("[1/4] Lese Gipfel und kartierte Startpunkte", flush=True)
     tiles: dict[tuple[int, int], list[Node]] = defaultdict(list)
+    starts: list[Node] = []
     for node in PbfReader(input_path).tagged_nodes():
         if node.tags.get("natural") == "peak" and node.tags.get("name"):
             tiles[_tile_key(node.lat, node.lon, tile_degrees)].append(node)
+        if any(node.tags.get(key) == value for key, value in STARTS):
+            starts.append(node)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     written = 0
     peaks_seen = sum(len(peaks) for peaks in tiles.values())
-    with output_path.open("w", encoding="utf-8") as handle:
-        for number, (tile, peaks) in enumerate(sorted(tiles.items()), start=1):
-            print(f"[{number}/{len(tiles)}] Verarbeite {len(peaks)} Gipfel in Kachel {tile}", flush=True)
-            bounds = _tile_bounds(tile, tile_degrees, buffer_km)
-            starts = {
-                node.osm_id
-                for node in PbfReader(input_path).tagged_nodes()
-                if _in_bounds(node.lat, node.lon, bounds)
-                and any(node.tags.get(key) == value for key, value in STARTS)
-            }
-            coordinates = {
-                node_id: (lat, lon)
-                for node_id, lat, lon in PbfReader(input_path).all_nodes()
-                if _in_bounds(lat, lon, bounds)
-            }
-            graph: dict[int, list[tuple[int, float, dict[str, str]]]] = {}
-            for way in PbfReader(input_path).tagged_ways():
-                if (
-                    way.tags.get("highway") not in WALKABLE
-                    or way.tags.get("foot") == "no"
-                    or way.tags.get("access") in {"private", "no"}
-                ):
-                    continue
-                for left, right in zip(way.node_refs, way.node_refs[1:]):
-                    if left not in coordinates or right not in coordinates:
+    with tempfile.TemporaryDirectory(prefix="bergchronik-summits-") as temporary:
+        index_path = Path(temporary) / "footways.sqlite"
+        database = sqlite3.connect(index_path)
+        database.executescript("""
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            CREATE TABLE ways (id INTEGER PRIMARY KEY, refs TEXT NOT NULL, tags TEXT NOT NULL);
+            CREATE VIRTUAL TABLE way_bounds USING rtree(id, min_lat, max_lat, min_lon, max_lon);
+        """)
+        needed_nodes: set[int] = set()
+        way_rows: list[tuple[int, str, str]] = []
+        print("[2/4] Indexiere begehbare OSM-Wege", flush=True)
+        for way in PbfReader(input_path).tagged_ways():
+            if way.tags.get("highway") not in WALKABLE or way.tags.get("foot") == "no" or way.tags.get("access") in {"private", "no"}:
+                continue
+            if len(way.node_refs) < 2:
+                continue
+            tags = {key: way.tags[key] for key in ("sac_scale", "via_ferrata_scale", "climbing:grade:uiaa", "climbing:grade") if key in way.tags}
+            way_rows.append((way.osm_id, json.dumps(way.node_refs), json.dumps(tags)))
+            needed_nodes.update(way.node_refs)
+            if len(way_rows) >= 5_000:
+                database.executemany("INSERT OR REPLACE INTO ways VALUES (?, ?, ?)", way_rows)
+                way_rows.clear()
+        if way_rows:
+            database.executemany("INSERT OR REPLACE INTO ways VALUES (?, ?, ?)", way_rows)
+        database.commit()
+
+        print("[3/4] Lese Koordinaten der Fußwege", flush=True)
+        coordinates: dict[int, tuple[float, float]] = {}
+        for node_id, lat, lon in PbfReader(input_path).all_nodes():
+            if node_id in needed_nodes:
+                coordinates[node_id] = (lat, lon)
+        needed_nodes.clear()
+
+        bound_rows: list[tuple[int, float, float, float, float]] = []
+        for way_id, refs_json in database.execute("SELECT id, refs FROM ways"):
+            positions = [coordinates[node_id] for node_id in json.loads(refs_json) if node_id in coordinates]
+            if len(positions) < 2:
+                continue
+            latitudes, longitudes = zip(*positions)
+            bound_rows.append((way_id, min(latitudes), max(latitudes), min(longitudes), max(longitudes)))
+            if len(bound_rows) >= 5_000:
+                database.executemany("INSERT INTO way_bounds VALUES (?, ?, ?, ?, ?)", bound_rows)
+                bound_rows.clear()
+        if bound_rows:
+            database.executemany("INSERT INTO way_bounds VALUES (?, ?, ?, ?, ?)", bound_rows)
+        database.commit()
+
+        with output_path.open("w", encoding="utf-8") as handle:
+            for number, (tile, peaks) in enumerate(sorted(tiles.items()), start=1):
+                print(f"[4/4] Kachel {number}/{len(tiles)}: {len(peaks)} Gipfel", flush=True)
+                bounds = _tile_bounds(tile, tile_degrees, buffer_km)
+                graph: dict[int, list[tuple[int, float, dict[str, str]]]] = {}
+                query = """
+                    SELECT w.refs, w.tags FROM way_bounds b JOIN ways w ON w.id = b.id
+                    WHERE b.min_lat <= ? AND b.max_lat >= ? AND b.min_lon <= ? AND b.max_lon >= ?
+                """
+                for refs_json, tags_json in database.execute(query, (bounds[1], bounds[0], bounds[3], bounds[2])):
+                    refs = json.loads(refs_json)
+                    tags = json.loads(tags_json)
+                    for left, right in zip(refs, refs[1:]):
+                        if left not in coordinates or right not in coordinates:
+                            continue
+                        if not _in_bounds(*coordinates[left], bounds) or not _in_bounds(*coordinates[right], bounds):
+                            continue
+                        edge = _distance_m(*coordinates[left], *coordinates[right])
+                        if 0 < edge < 2_000:
+                            graph.setdefault(left, []).append((right, edge, tags))
+                            graph.setdefault(right, []).append((left, edge, tags))
+                start_ids = {node.osm_id for node in starts if node.osm_id in graph and _in_bounds(node.lat, node.lon, bounds)}
+                distances = {node_id: 0.0 for node_id in start_ids}
+                queue = [(0.0, node_id) for node_id in start_ids]
+                previous: dict[int, tuple[int, dict[str, str]]] = {}
+                while queue:
+                    cost, current = heapq.heappop(queue)
+                    if cost != distances.get(current) or cost > 75_000:
                         continue
-                    edge = _distance_m(*coordinates[left], *coordinates[right])
-                    if 0 < edge < 2_000:
-                        graph.setdefault(left, []).append((right, edge, way.tags))
-                        graph.setdefault(right, []).append((left, edge, way.tags))
-
-            starts.intersection_update(graph)
-            distances = {node: 0.0 for node in starts}
-            queue = [(0.0, node) for node in starts]
-            previous: dict[int, tuple[int, dict[str, str]]] = {}
-            while queue:
-                cost, current = heapq.heappop(queue)
-                if cost != distances.get(current) or cost > 75_000:
-                    continue
-                for neighbor, edge, tags in graph.get(current, []):
-                    candidate = cost + edge
-                    if candidate < distances.get(neighbor, math.inf):
-                        distances[neighbor] = candidate
-                        previous[neighbor] = (current, tags)
-                        heapq.heappush(queue, (candidate, neighbor))
-
-            nearby: dict[tuple[int, int], list[int]] = defaultdict(list)
-            for node_id in distances:
-                lat, lon = coordinates[node_id]
-                nearby[math.floor(lat * 100), math.floor(lon * 100)].append(node_id)
-            for peak in peaks:
-                row, column = math.floor(peak.lat * 100), math.floor(peak.lon * 100)
-                candidates = [
-                    node_id
-                    for x in range(row - 1, row + 2)
-                    for y in range(column - 1, column + 2)
-                    for node_id in nearby.get((x, y), [])
-                    if _within(coordinates[node_id], (peak.lat, peak.lon), 100.0)
-                ]
-                if not candidates:
-                    continue
-                end = min(candidates, key=lambda node_id: _distance_m(*coordinates[node_id], peak.lat, peak.lon))
-                nodes, tags = [end], []
-                while nodes[-1] not in starts:
-                    previous_node, edge_tags = previous[nodes[-1]]
-                    nodes.append(previous_node)
-                    tags.append(edge_tags)
-                nodes.reverse()
-                tags.reverse()
-                feature = _summit_feature(country, peak, nodes, tags, coordinates, distances[end])
-                handle.write(json.dumps(feature, ensure_ascii=False, separators=(",", ":")) + "\n")
-                written += 1
-            del starts, coordinates, graph, distances, queue, previous, nearby
-            collect()
+                    for neighbor, edge, tags in graph.get(current, []):
+                        candidate = cost + edge
+                        if candidate < distances.get(neighbor, math.inf):
+                            distances[neighbor] = candidate
+                            previous[neighbor] = (current, tags)
+                            heapq.heappush(queue, (candidate, neighbor))
+                nearby: dict[tuple[int, int], list[int]] = defaultdict(list)
+                for node_id in distances:
+                    lat, lon = coordinates[node_id]
+                    nearby[math.floor(lat * 100), math.floor(lon * 100)].append(node_id)
+                for peak in peaks:
+                    row, column = math.floor(peak.lat * 100), math.floor(peak.lon * 100)
+                    candidates = [node_id for x in range(row - 1, row + 2) for y in range(column - 1, column + 2) for node_id in nearby.get((x, y), []) if _within(coordinates[node_id], (peak.lat, peak.lon), 100.0)]
+                    if not candidates:
+                        continue
+                    end = min(candidates, key=lambda node_id: _distance_m(*coordinates[node_id], peak.lat, peak.lon))
+                    nodes, tags = [end], []
+                    while nodes[-1] not in start_ids:
+                        previous_node, edge_tags = previous[nodes[-1]]
+                        nodes.append(previous_node)
+                        tags.append(edge_tags)
+                    nodes.reverse()
+                    tags.reverse()
+                    feature = _summit_feature(country, peak, nodes, tags, coordinates, distances[end])
+                    handle.write(json.dumps(feature, ensure_ascii=False, separators=(",", ":")) + "\n")
+                    written += 1
+                del graph, distances, queue, previous, nearby
+                collect()
+        database.close()
     return {"peaks_seen": peaks_seen, "routes_written": written}
