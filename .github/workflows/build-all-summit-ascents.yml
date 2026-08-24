@@ -56,7 +56,9 @@ jobs:
           python -m bergchronik_tourdata summit-ascents \
             --input "data/$COUNTRY.osm.pbf" \
             --output "output/summit-ascents-$COUNTRY.geojsonseq" \
-            --country "$COUNTRY"
+            --country "$COUNTRY" \
+            --tile-degrees 2.0 \
+            --buffer-km 20.0
       - uses: actions/upload-artifact@v7
         with:
           name: summit-ascents-${{ matrix.country }}-${{ github.run_id }}

@@ -45,6 +45,11 @@ Zeile beschreibt genau einen nicht-runden, im OSM-Fußnetz erreichbaren Aufstieg
 auf einen benannten Gipfel. Unvollständig kartierte Verbindungen werden nicht
 erfunden und erscheinen daher nicht in der Ausgabe.
 
+Die Länder werden intern in räumliche Kacheln geteilt. Dadurch liegt nie das
+vollständige nationale Fußwegenetz gleichzeitig im Arbeitsspeicher. Das
+Workflow-Protokoll zeigt nach jeder Kachel den Fortschritt; größere Länder
+können deshalb wesentlich länger als der Download selbst dauern.
+
 `uiaa_grade`, `sac_scale` und `via_ferrata_scale` werden von den verwendeten
 OSM-Wegabschnitten übernommen. Ein UIAA- oder Klettersteigwert muss im
 Hauptprojekt als technische Passage beziehungsweise Klettersteig gekennzeichnet

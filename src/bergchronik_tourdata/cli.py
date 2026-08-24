@@ -42,6 +42,8 @@ def _parser() -> argparse.ArgumentParser:
     all_summits.add_argument("--input", type=Path, required=True)
     all_summits.add_argument("--output", type=Path, required=True)
     all_summits.add_argument("--country", required=True, choices=["AT", "DE", "CH", "IT"])
+    all_summits.add_argument("--tile-degrees", type=float, default=2.0)
+    all_summits.add_argument("--buffer-km", type=float, default=20.0)
     return parser
 
 
@@ -64,7 +66,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "summit-ascents":
-        result = build_all_summit_ascents(args.input, args.output, args.country)
+        result = build_all_summit_ascents(
+            args.input, args.output, args.country, args.tile_degrees, args.buffer_km
+        )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 

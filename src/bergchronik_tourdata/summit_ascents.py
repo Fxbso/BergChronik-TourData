@@ -5,6 +5,8 @@ import heapq
 import json
 import math
 import re
+from collections import defaultdict
+from gc import collect
 from pathlib import Path
 
 from .pbf import PbfReader
@@ -96,37 +98,163 @@ def build_summit_ascent(input_path: Path, output_path: Path, country: str, peak_
     return {"peak": feature["properties"]["peak_name"], "distance_m": feature["properties"]["distance_m"], "uiaa_grade": uiaa, "output": str(output_path)}
 
 
-def build_all_summit_ascents(input_path: Path, output_path: Path, country: str) -> dict[str, int]:
-    """One country-wide graph pass; emits every reachable named OSM summit."""
-    tagged = list(PbfReader(input_path).tagged_nodes())
-    peaks = [node for node in tagged if node.tags.get("natural") == "peak" and node.tags.get("name")]
-    starts = {node.osm_id for node in tagged if any(node.tags.get(k) == v for k, v in STARTS)}
-    coordinates = {node_id: (lat, lon) for node_id, lat, lon in PbfReader(input_path).all_nodes()}
-    graph: dict[int, list[tuple[int, float, dict[str, str]]]] = {}
-    for way in PbfReader(input_path).tagged_ways():
-        if way.tags.get("highway") not in WALKABLE or way.tags.get("foot") == "no" or way.tags.get("access") in {"private", "no"}:
-            continue
-        for left, right in zip(way.node_refs, way.node_refs[1:]):
-            if left in coordinates and right in coordinates:
-                edge = _distance_m(*coordinates[left], *coordinates[right])
-                if 0 < edge < 2_000:
-                    graph.setdefault(left, []).append((right, edge, way.tags)); graph.setdefault(right, []).append((left, edge, way.tags))
-    starts &= graph.keys()
-    distances = {node: 0.0 for node in starts}; queue = [(0.0, node) for node in starts]; previous: dict[int, tuple[int, dict[str, str]]] = {}
-    while queue:
-        cost, current = heapq.heappop(queue)
-        if cost != distances.get(current) or cost > 60_000: continue
-        for neighbor, edge, tags in graph.get(current, []):
-            candidate = cost + edge
-            if candidate < distances.get(neighbor, math.inf): distances[neighbor] = candidate; previous[neighbor] = (current, tags); heapq.heappush(queue, (candidate, neighbor))
-    output_path.parent.mkdir(parents=True, exist_ok=True); written = 0
+def _tile_key(lat: float, lon: float, tile_degrees: float) -> tuple[int, int]:
+    return math.floor(lat / tile_degrees), math.floor(lon / tile_degrees)
+
+
+def _tile_bounds(
+    key: tuple[int, int], tile_degrees: float, buffer_km: float
+) -> tuple[float, float, float, float]:
+    min_lat, min_lon = key[0] * tile_degrees, key[1] * tile_degrees
+    mid_lat = min_lat + tile_degrees / 2
+    lat_buffer = buffer_km / 111.0
+    lon_buffer = buffer_km / max(20.0, 111.0 * math.cos(math.radians(mid_lat)))
+    return (
+        min_lat - lat_buffer,
+        min_lat + tile_degrees + lat_buffer,
+        min_lon - lon_buffer,
+        min_lon + tile_degrees + lon_buffer,
+    )
+
+
+def _in_bounds(lat: float, lon: float, bounds: tuple[float, float, float, float]) -> bool:
+    return bounds[0] <= lat <= bounds[1] and bounds[2] <= lon <= bounds[3]
+
+
+def _summit_feature(
+    country: str,
+    peak: Node,
+    nodes: list[int],
+    tags: list[dict[str, str]],
+    coordinates: dict[int, tuple[float, float]],
+    distance_m: float,
+) -> dict[str, object]:
+    uiaa = max((_uiaa(item) for item in tags), key=lambda value: (len(value), value), default="")
+    sac = max((item.get("sac_scale", "") for item in tags), default="")
+    ferrata = max((item.get("via_ferrata_scale", "") for item in tags), default="")
+    flags = (["requires_climbing"] if uiaa else [])
+    if ferrata:
+        flags.extend(["via_ferrata", "requires_via_ferrata_set"])
+    return {
+        "type": "Feature",
+        "properties": {
+            "route_id": f"osm-footgraph-{country.lower()}-{peak.osm_id}",
+            "country": country,
+            "peak_osm_id": str(peak.osm_id),
+            "peak_name": peak.tags["name"],
+            "peak_lat": peak.lat,
+            "peak_lon": peak.lon,
+            "name": f"OSM-Aufstieg auf {peak.tags['name']}",
+            "start_name": "Kartierter OSM-Startpunkt",
+            "route_kind": "summit_ascent",
+            "roundtrip": False,
+            "source": "OpenStreetMap-Fußgraph",
+            "source_url": f"https://www.openstreetmap.org/node/{peak.osm_id}",
+            "distance_m": round(distance_m),
+            "confidence": 0.78,
+            "uiaa_grade": uiaa,
+            "sac_scale": sac,
+            "via_ferrata_scale": ferrata,
+            "safety_flags": flags,
+        },
+        "geometry": {
+            "type": "LineString",
+            "coordinates": [[coordinates[node][1], coordinates[node][0]] for node in nodes],
+        },
+    }
+
+
+def build_all_summit_ascents(
+    input_path: Path,
+    output_path: Path,
+    country: str,
+    tile_degrees: float = 2.0,
+    buffer_km: float = 20.0,
+) -> dict[str, int]:
+    """Build local graph tiles so a country's full foot graph never enters memory."""
+    if tile_degrees < 0.5 or buffer_km < 5.0:
+        raise ValueError("Kachelgröße muss mindestens 0,5 Grad und Puffer mindestens 5 km sein.")
+
+    tiles: dict[tuple[int, int], list[Node]] = defaultdict(list)
+    for node in PbfReader(input_path).tagged_nodes():
+        if node.tags.get("natural") == "peak" and node.tags.get("name"):
+            tiles[_tile_key(node.lat, node.lon, tile_degrees)].append(node)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    peaks_seen = sum(len(peaks) for peaks in tiles.values())
     with output_path.open("w", encoding="utf-8") as handle:
-        for peak in peaks:
-            end = min((node for node in distances if _within(coordinates[node], (peak.lat, peak.lon), 100.0)), key=lambda node: _distance_m(*coordinates[node], peak.lat, peak.lon), default=None)
-            if end is None: continue
-            nodes, tags = [end], []
-            while nodes[-1] not in starts: previous_node, edge_tags = previous[nodes[-1]]; nodes.append(previous_node); tags.append(edge_tags)
-            nodes.reverse(); tags.reverse(); uiaa = max((_uiaa(tag) for tag in tags), key=lambda value: (len(value), value), default="")
-            props = {"route_id": f"osm-footgraph-{country.lower()}-{peak.osm_id}", "country": country, "peak_osm_id": str(peak.osm_id), "peak_name": peak.tags["name"], "peak_lat": peak.lat, "peak_lon": peak.lon, "name": f"OSM-Aufstieg auf {peak.tags['name']}", "start_name": "Kartierter OSM-Startpunkt", "route_kind": "summit_ascent", "roundtrip": False, "source": "OpenStreetMap-Fußgraph", "source_url": f"https://www.openstreetmap.org/node/{peak.osm_id}", "distance_m": round(distances[end]), "confidence": 0.78, "uiaa_grade": uiaa, "sac_scale": max((tag.get('sac_scale','') for tag in tags), default=''), "via_ferrata_scale": max((tag.get('via_ferrata_scale','') for tag in tags), default=''), "safety_flags": ["requires_climbing"] if uiaa else []}
-            handle.write(json.dumps({"type":"Feature", "properties":props, "geometry":{"type":"LineString", "coordinates":[[coordinates[node][1],coordinates[node][0]] for node in nodes]}}, ensure_ascii=False, separators=(",",":")) + "\n"); written += 1
-    return {"peaks_seen": len(peaks), "routes_written": written}
+        for number, (tile, peaks) in enumerate(sorted(tiles.items()), start=1):
+            print(f"[{number}/{len(tiles)}] Verarbeite {len(peaks)} Gipfel in Kachel {tile}", flush=True)
+            bounds = _tile_bounds(tile, tile_degrees, buffer_km)
+            starts = {
+                node.osm_id
+                for node in PbfReader(input_path).tagged_nodes()
+                if _in_bounds(node.lat, node.lon, bounds)
+                and any(node.tags.get(key) == value for key, value in STARTS)
+            }
+            coordinates = {
+                node_id: (lat, lon)
+                for node_id, lat, lon in PbfReader(input_path).all_nodes()
+                if _in_bounds(lat, lon, bounds)
+            }
+            graph: dict[int, list[tuple[int, float, dict[str, str]]]] = {}
+            for way in PbfReader(input_path).tagged_ways():
+                if (
+                    way.tags.get("highway") not in WALKABLE
+                    or way.tags.get("foot") == "no"
+                    or way.tags.get("access") in {"private", "no"}
+                ):
+                    continue
+                for left, right in zip(way.node_refs, way.node_refs[1:]):
+                    if left not in coordinates or right not in coordinates:
+                        continue
+                    edge = _distance_m(*coordinates[left], *coordinates[right])
+                    if 0 < edge < 2_000:
+                        graph.setdefault(left, []).append((right, edge, way.tags))
+                        graph.setdefault(right, []).append((left, edge, way.tags))
+
+            starts.intersection_update(graph)
+            distances = {node: 0.0 for node in starts}
+            queue = [(0.0, node) for node in starts]
+            previous: dict[int, tuple[int, dict[str, str]]] = {}
+            while queue:
+                cost, current = heapq.heappop(queue)
+                if cost != distances.get(current) or cost > 75_000:
+                    continue
+                for neighbor, edge, tags in graph.get(current, []):
+                    candidate = cost + edge
+                    if candidate < distances.get(neighbor, math.inf):
+                        distances[neighbor] = candidate
+                        previous[neighbor] = (current, tags)
+                        heapq.heappush(queue, (candidate, neighbor))
+
+            nearby: dict[tuple[int, int], list[int]] = defaultdict(list)
+            for node_id in distances:
+                lat, lon = coordinates[node_id]
+                nearby[math.floor(lat * 100), math.floor(lon * 100)].append(node_id)
+            for peak in peaks:
+                row, column = math.floor(peak.lat * 100), math.floor(peak.lon * 100)
+                candidates = [
+                    node_id
+                    for x in range(row - 1, row + 2)
+                    for y in range(column - 1, column + 2)
+                    for node_id in nearby.get((x, y), [])
+                    if _within(coordinates[node_id], (peak.lat, peak.lon), 100.0)
+                ]
+                if not candidates:
+                    continue
+                end = min(candidates, key=lambda node_id: _distance_m(*coordinates[node_id], peak.lat, peak.lon))
+                nodes, tags = [end], []
+                while nodes[-1] not in starts:
+                    previous_node, edge_tags = previous[nodes[-1]]
+                    nodes.append(previous_node)
+                    tags.append(edge_tags)
+                nodes.reverse()
+                tags.reverse()
+                feature = _summit_feature(country, peak, nodes, tags, coordinates, distances[end])
+                handle.write(json.dumps(feature, ensure_ascii=False, separators=(",", ":")) + "\n")
+                written += 1
+            del starts, coordinates, graph, distances, queue, previous, nearby
+            collect()
+    return {"peaks_seen": peaks_seen, "routes_written": written}
