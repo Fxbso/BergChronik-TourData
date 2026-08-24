@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from bergchronik_tourdata.pbf import Node, Way
-from bergchronik_tourdata.summit_ascents import build_summit_ascent
+from bergchronik_tourdata.summit_ascents import build_all_summit_ascents, build_summit_ascent
 
 
 class _Reader:
@@ -42,3 +42,13 @@ class SummitAscentTest(unittest.TestCase):
         self.assertIn("requires_climbing", feature["properties"]["safety_flags"])
         self.assertFalse(feature["properties"]["roundtrip"])
         self.assertEqual(feature["geometry"]["coordinates"][-1], [12.0, 47.0])
+
+    def test_creates_one_non_roundtrip_ascent_per_reachable_summit(self):
+        with tempfile.TemporaryDirectory() as directory, patch("bergchronik_tourdata.summit_ascents.PbfReader", _Reader):
+            output = Path(directory) / "summits.geojsonseq"
+            result = build_all_summit_ascents(Path(directory) / "fixture.osm.pbf", output, "AT")
+            features = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(result, {"peaks_seen": 1, "routes_written": 1})
+        self.assertEqual(features[0]["properties"]["peak_name"], "Testgipfel")
+        self.assertFalse(features[0]["properties"]["roundtrip"])
+        self.assertIn("requires_climbing", features[0]["properties"]["safety_flags"])

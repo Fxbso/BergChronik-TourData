@@ -290,6 +290,36 @@ def _dense_nodes(
         )
 
 
+def _dense_tagged_nodes(
+    data: bytes,
+    strings: tuple[str, ...],
+    granularity: int,
+    lat_offset: int,
+    lon_offset: int,
+) -> Iterator[Node]:
+    """Decode tagged DenseNodes; their tags use a zero-terminated key/value stream."""
+    positions = list(_dense_nodes(data, granularity, lat_offset, lon_offset))
+    key_values: list[int] = []
+    for number, wire_type, value in _fields(data):
+        if number == 10 and wire_type == 2 and isinstance(value, bytes):
+            key_values = _packed(value)
+
+    offset = 0
+    for osm_id, lat, lon in positions:
+        tags: dict[str, str] = {}
+        while offset < len(key_values) and key_values[offset] != 0:
+            if offset + 1 >= len(key_values):
+                raise PbfError("Abgeschnittene DenseNode-Tags")
+            key_index, value_index = key_values[offset], key_values[offset + 1]
+            if key_index < len(strings) and value_index < len(strings):
+                tags[strings[key_index]] = strings[value_index]
+            offset += 2
+        if offset < len(key_values):
+            offset += 1
+        if tags:
+            yield Node(osm_id, lat, lon, tags)
+
+
 def _plain_node(
     data: bytes,
     granularity: int,
@@ -372,7 +402,7 @@ class PbfReader:
                             yield node
 
     def tagged_nodes(self) -> Iterator[Node]:
-        """Stream ordinary tagged nodes; dense nodes without tags stay omitted."""
+        """Stream tagged ordinary and compact DenseNodes."""
         for block_type, payload in _blocks(self.path):
             if block_type != "OSMData":
                 continue
@@ -387,6 +417,10 @@ class PbfReader:
                         if number == 2 and wire_type == 2 and isinstance(value, bytes): keys = _packed(value)
                         elif number == 3 and wire_type == 2 and isinstance(value, bytes): values = _packed(value)
                     yield Node(node.osm_id, node.lat, node.lon, _tags(keys, values, strings))
+                for dense_data in _message_values(group, 2):
+                    yield from _dense_tagged_nodes(
+                        dense_data, strings, granularity, lat_offset, lon_offset
+                    )
 
     def all_nodes(self) -> Iterator[tuple[int, float, float]]:
         """Stream every coordinate, including compact dense OSM nodes."""

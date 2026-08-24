@@ -1,0 +1,64 @@
+name: Gipfelaufstiege aller Länder erzeugen
+
+on:
+  workflow_dispatch:
+    inputs:
+      country:
+        description: "Land oder ALL für AT, DE, CH und IT"
+        required: true
+        default: ALL
+        type: choice
+        options: [ALL, AT, DE, CH, IT]
+
+permissions:
+  contents: read
+
+jobs:
+  select-countries:
+    runs-on: ubuntu-latest
+    outputs:
+      countries: ${{ steps.matrix.outputs.countries }}
+    steps:
+      - id: matrix
+        env:
+          COUNTRY: ${{ inputs.country }}
+        run: |
+          if [ "$COUNTRY" = "ALL" ]; then
+            echo 'countries=["AT","DE","CH","IT"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "countries=[\"$COUNTRY\"]" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: select-countries
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        country: ${{ fromJSON(needs.select-countries.outputs.countries) }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Geofabrik-Extrakt laden
+        env:
+          COUNTRY: ${{ matrix.country }}
+        run: |
+          case "$COUNTRY" in AT) slug=austria;; DE) slug=germany;; CH) slug=switzerland;; IT) slug=italy;; esac
+          mkdir -p data output
+          curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 \
+            -o "data/$COUNTRY.osm.pbf" "https://download.geofabrik.de/europe/$slug-latest.osm.pbf"
+      - name: Alle kartierten Gipfelaufstiege aus dem Fußnetz berechnen
+        env:
+          PYTHONPATH: src
+          COUNTRY: ${{ matrix.country }}
+        run: |
+          python -m bergchronik_tourdata summit-ascents \
+            --input "data/$COUNTRY.osm.pbf" \
+            --output "output/summit-ascents-$COUNTRY.geojsonseq" \
+            --country "$COUNTRY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: summit-ascents-${{ matrix.country }}-${{ github.run_id }}
+          path: output/*.geojsonseq
+          retention-days: 14

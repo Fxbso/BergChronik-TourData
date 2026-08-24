@@ -94,3 +94,39 @@ def build_summit_ascent(input_path: Path, output_path: Path, country: str, peak_
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(feature, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
     return {"peak": feature["properties"]["peak_name"], "distance_m": feature["properties"]["distance_m"], "uiaa_grade": uiaa, "output": str(output_path)}
+
+
+def build_all_summit_ascents(input_path: Path, output_path: Path, country: str) -> dict[str, int]:
+    """One country-wide graph pass; emits every reachable named OSM summit."""
+    tagged = list(PbfReader(input_path).tagged_nodes())
+    peaks = [node for node in tagged if node.tags.get("natural") == "peak" and node.tags.get("name")]
+    starts = {node.osm_id for node in tagged if any(node.tags.get(k) == v for k, v in STARTS)}
+    coordinates = {node_id: (lat, lon) for node_id, lat, lon in PbfReader(input_path).all_nodes()}
+    graph: dict[int, list[tuple[int, float, dict[str, str]]]] = {}
+    for way in PbfReader(input_path).tagged_ways():
+        if way.tags.get("highway") not in WALKABLE or way.tags.get("foot") == "no" or way.tags.get("access") in {"private", "no"}:
+            continue
+        for left, right in zip(way.node_refs, way.node_refs[1:]):
+            if left in coordinates and right in coordinates:
+                edge = _distance_m(*coordinates[left], *coordinates[right])
+                if 0 < edge < 2_000:
+                    graph.setdefault(left, []).append((right, edge, way.tags)); graph.setdefault(right, []).append((left, edge, way.tags))
+    starts &= graph.keys()
+    distances = {node: 0.0 for node in starts}; queue = [(0.0, node) for node in starts]; previous: dict[int, tuple[int, dict[str, str]]] = {}
+    while queue:
+        cost, current = heapq.heappop(queue)
+        if cost != distances.get(current) or cost > 60_000: continue
+        for neighbor, edge, tags in graph.get(current, []):
+            candidate = cost + edge
+            if candidate < distances.get(neighbor, math.inf): distances[neighbor] = candidate; previous[neighbor] = (current, tags); heapq.heappush(queue, (candidate, neighbor))
+    output_path.parent.mkdir(parents=True, exist_ok=True); written = 0
+    with output_path.open("w", encoding="utf-8") as handle:
+        for peak in peaks:
+            end = min((node for node in distances if _within(coordinates[node], (peak.lat, peak.lon), 100.0)), key=lambda node: _distance_m(*coordinates[node], peak.lat, peak.lon), default=None)
+            if end is None: continue
+            nodes, tags = [end], []
+            while nodes[-1] not in starts: previous_node, edge_tags = previous[nodes[-1]]; nodes.append(previous_node); tags.append(edge_tags)
+            nodes.reverse(); tags.reverse(); uiaa = max((_uiaa(tag) for tag in tags), key=lambda value: (len(value), value), default="")
+            props = {"route_id": f"osm-footgraph-{country.lower()}-{peak.osm_id}", "country": country, "peak_osm_id": str(peak.osm_id), "peak_name": peak.tags["name"], "peak_lat": peak.lat, "peak_lon": peak.lon, "name": f"OSM-Aufstieg auf {peak.tags['name']}", "start_name": "Kartierter OSM-Startpunkt", "route_kind": "summit_ascent", "roundtrip": False, "source": "OpenStreetMap-Fußgraph", "source_url": f"https://www.openstreetmap.org/node/{peak.osm_id}", "distance_m": round(distances[end]), "confidence": 0.78, "uiaa_grade": uiaa, "sac_scale": max((tag.get('sac_scale','') for tag in tags), default=''), "via_ferrata_scale": max((tag.get('via_ferrata_scale','') for tag in tags), default=''), "safety_flags": ["requires_climbing"] if uiaa else []}
+            handle.write(json.dumps({"type":"Feature", "properties":props, "geometry":{"type":"LineString", "coordinates":[[coordinates[node][1],coordinates[node][0]] for node in nodes]}}, ensure_ascii=False, separators=(",",":")) + "\n"); written += 1
+    return {"peaks_seen": len(peaks), "routes_written": written}

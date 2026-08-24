@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .countries import get_country
 from .pipeline import build_catalog, search_catalog
-from .summit_ascents import build_summit_ascent
+from .summit_ascents import build_all_summit_ascents, build_summit_ascent
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -35,6 +35,13 @@ def _parser() -> argparse.ArgumentParser:
     summit.add_argument("--country", required=True, choices=["AT", "DE", "CH", "IT"])
     summit.add_argument("--peak", required=True)
     summit.add_argument("--radius-km", type=float, default=30.0)
+
+    all_summits = commands.add_parser(
+        "summit-ascents", help="Alle erreichbaren OSM-Gipfelaufstiege eines Landes erzeugen"
+    )
+    all_summits.add_argument("--input", type=Path, required=True)
+    all_summits.add_argument("--output", type=Path, required=True)
+    all_summits.add_argument("--country", required=True, choices=["AT", "DE", "CH", "IT"])
     return parser
 
 
@@ -53,6 +60,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "summit-ascent":
         result = build_summit_ascent(args.input, args.output, args.country, args.peak, args.radius_km)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "summit-ascents":
+        result = build_all_summit_ascents(args.input, args.output, args.country)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 

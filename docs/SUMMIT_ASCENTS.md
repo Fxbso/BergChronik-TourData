@@ -36,3 +36,17 @@ sudo -u www-data php scripts/import-summit-routes.php \
 Ein fehlendes Ergebnis ist absichtlich kein Ersatz durch eine erfundene Linie:
 Entweder endet das OSM-Netz nicht am Gipfel oder ein geeigneter Startpunkt ist
 nicht kartiert. Solche Ziele bleiben für eine fachlich geprüfte Ergänzung offen.
+
+## Alle kartierten Gipfelaufstiege eines Landes
+
+Der manuelle Workflow **Gipfelaufstiege aller Länder erzeugen** verarbeitet AT,
+DE, CH und IT getrennt. Die Auswahl `ALL` erstellt ein Artefakt je Land. Jede
+Zeile beschreibt genau einen nicht-runden, im OSM-Fußnetz erreichbaren Aufstieg
+auf einen benannten Gipfel. Unvollständig kartierte Verbindungen werden nicht
+erfunden und erscheinen daher nicht in der Ausgabe.
+
+`uiaa_grade`, `sac_scale` und `via_ferrata_scale` werden von den verwendeten
+OSM-Wegabschnitten übernommen. Ein UIAA- oder Klettersteigwert muss im
+Hauptprojekt als technische Passage beziehungsweise Klettersteig gekennzeichnet
+werden; der Datenexport erklärt eine solche Route nicht automatisch zur
+Wanderung.
