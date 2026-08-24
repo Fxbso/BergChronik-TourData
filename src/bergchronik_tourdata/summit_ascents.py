@@ -13,6 +13,14 @@ from .pbf import PbfReader
 
 WALKABLE = {"path", "footway", "track", "steps", "pedestrian"}
 STARTS = {("amenity", "parking"), ("highway", "parking_entrance"), ("tourism", "information"), ("public_transport", "platform")}
+SAC_SCALE = {
+    "hiking": "T1",
+    "mountain_hiking": "T2",
+    "demanding_mountain_hiking": "T3",
+    "alpine_hiking": "T4",
+    "demanding_alpine_hiking": "T5",
+    "difficult_alpine_hiking": "T6",
+}
 
 
 def _distance_m(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> float:
@@ -32,6 +40,43 @@ def _within(position: tuple[float, float], peak: tuple[float, float], radius: fl
 def _uiaa(tags: dict[str, str]) -> str:
     value = tags.get("climbing:grade:uiaa", tags.get("climbing:grade", "")).upper().replace(" ", "")
     return value if re.fullmatch(r"(?:I|II|III|IV|V|VI|VII|VIII|IX|X|XI|XII)[+-]?", value) else ""
+
+
+def _sac(tags: list[dict[str, str]]) -> str:
+    values = [SAC_SCALE.get(item.get("sac_scale", "").strip().lower(), "") for item in tags]
+    return max(values, key=lambda value: int(value[1:]) if value else 0, default="")
+
+
+def _via_ferrata(tags: list[dict[str, str]]) -> str:
+    """Normalize common OSM ferrata scales to the A-F scale used by the app."""
+    values = [item.get("via_ferrata_scale", "").strip().upper() for item in tags]
+    normalized: list[str] = []
+    for raw in values:
+        if not raw:
+            continue
+        if re.fullmatch(r"[A-F](?:/[A-F])?", raw):
+            normalized.append(raw)
+            continue
+        half = re.fullmatch(r"(?:KS|K)?\s*([0-6])[.,]5", raw)
+        numeric = re.fullmatch(r"(?:KS|K)?\s*([0-6])(?:\s*(?:/|-|TO|BIS)\s*([0-6]))?([+-])?", raw)
+        if half:
+            first = max(0, min(5, int(half.group(1)) - 1))
+            normalized.append("ABCDEF"[first] + "/" + "ABCDEF"[min(5, first + 1)])
+        elif numeric:
+            first = int(numeric.group(1))
+            second = int(numeric.group(2)) if numeric.group(2) else None
+            modifier = numeric.group(3) or ""
+            grade = lambda number: "ABCDEF"[max(0, min(5, number - 1))]
+            if second is not None and second != first:
+                low, high = min(first, second), max(first, second)
+                normalized.append(grade(low) + "/" + grade(high) if high - low == 1 else grade(high))
+            elif modifier == "+" and first < 6:
+                normalized.append(grade(first) + "/" + grade(first + 1))
+            elif modifier == "-" and first > 1:
+                normalized.append(grade(first - 1) + "/" + grade(first))
+            else:
+                normalized.append(grade(first))
+    return max(normalized, key=lambda value: "ABCDEF".index(value[-1]), default="")
 
 
 def build_summit_ascent(input_path: Path, output_path: Path, country: str, peak_name: str, radius_km: float = 30.0) -> dict[str, object]:
@@ -89,8 +134,8 @@ def build_summit_ascent(input_path: Path, output_path: Path, country: str, peak_
         nodes.append(following)
         tags.append(edge_tags)
     uiaa = max((_uiaa(item) for item in tags), key=lambda value: (len(value), value), default="")
-    sac = max((item.get("sac_scale", "") for item in tags), default="")
-    ferrata = max((item.get("via_ferrata_scale", "") for item in tags), default="")
+    sac = _sac(tags)
+    ferrata = _via_ferrata(tags)
     flags = (["requires_climbing"] if uiaa else []) + (["via_ferrata", "requires_via_ferrata_set"] if ferrata else [])
     feature = {"type": "Feature", "properties": {"route_id": f"osm-footgraph-{country.lower()}-{peak.osm_id}", "country": country, "peak_osm_id": str(peak.osm_id), "peak_name": peak.tags.get("name", peak_name), "peak_lat": peak.lat, "peak_lon": peak.lon, "name": f"OSM-Aufstieg auf {peak.tags.get('name', peak_name)}", "start_name": "Kartierter OSM-Startpunkt", "route_kind": "summit_ascent", "roundtrip": False, "source": "OpenStreetMap-Fußgraph", "source_url": f"https://www.openstreetmap.org/node/{peak.osm_id}", "distance_m": round(distances[source]), "confidence": 0.78, "uiaa_grade": uiaa, "sac_scale": sac, "via_ferrata_scale": ferrata, "safety_flags": flags}, "geometry": {"type": "LineString", "coordinates": [[coordinates[node][1], coordinates[node][0]] for node in nodes]}}
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,8 +175,8 @@ def _summit_feature(
     distance_m: float,
 ) -> dict[str, object]:
     uiaa = max((_uiaa(item) for item in tags), key=lambda value: (len(value), value), default="")
-    sac = max((item.get("sac_scale", "") for item in tags), default="")
-    ferrata = max((item.get("via_ferrata_scale", "") for item in tags), default="")
+    sac = _sac(tags)
+    ferrata = _via_ferrata(tags)
     flags = (["requires_climbing"] if uiaa else [])
     if ferrata:
         flags.extend(["via_ferrata", "requires_via_ferrata_set"])

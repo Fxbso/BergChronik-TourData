@@ -24,7 +24,7 @@ class _Reader:
 
     def tagged_ways(self):
         return iter([
-            Way(10, (2, 3, 4, 1), {"highway": "path", "sac_scale": "T4", "climbing:grade:uiaa": "II"}),
+            Way(10, (2, 3, 4, 1), {"highway": "path", "sac_scale": "alpine_hiking", "via_ferrata_scale": "3-", "climbing:grade:uiaa": "II"}),
         ])
 
     def all_nodes(self):
@@ -39,6 +39,8 @@ class SummitAscentTest(unittest.TestCase):
             feature = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(result["peak"], "Testgipfel")
         self.assertEqual(feature["properties"]["uiaa_grade"], "II")
+        self.assertEqual(feature["properties"]["sac_scale"], "T4")
+        self.assertEqual(feature["properties"]["via_ferrata_scale"], "B/C")
         self.assertIn("requires_climbing", feature["properties"]["safety_flags"])
         self.assertFalse(feature["properties"]["roundtrip"])
         self.assertEqual(feature["geometry"]["coordinates"][-1], [12.0, 47.0])
