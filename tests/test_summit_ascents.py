@@ -17,8 +17,8 @@ class _Reader:
     def tagged_nodes(self):
         return iter([
             Node(1, 47.0000, 12.0000, {"natural": "peak", "name": "Testgipfel"}),
-            Node(2, 46.9980, 12.0000, {"amenity": "parking"}),
-            Node(3, 46.9990, 12.0000, {}),
+            Node(2, 46.9970, 12.0000, {"amenity": "parking"}),
+            Node(3, 46.9985, 12.0000, {}),
             Node(4, 46.9997, 12.0000, {}),
         ])
 
@@ -28,7 +28,7 @@ class _Reader:
         ])
 
     def all_nodes(self):
-        return iter([(1, 47.0000, 12.0000), (2, 46.9980, 12.0000), (3, 46.9990, 12.0000), (4, 46.9997, 12.0000)])
+        return iter([(1, 47.0000, 12.0000), (2, 46.9970, 12.0000), (3, 46.9985, 12.0000), (4, 46.9997, 12.0000)])
 
 
 class SummitAscentTest(unittest.TestCase):

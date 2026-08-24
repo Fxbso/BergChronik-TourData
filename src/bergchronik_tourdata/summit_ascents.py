@@ -331,6 +331,8 @@ def build_all_summit_ascents(
                     if not candidates:
                         continue
                     end = min(candidates, key=lambda node_id: _distance_m(*coordinates[node_id], peak.lat, peak.lon))
+                    if not 300.0 <= distances[end] <= 60_000.0:
+                        continue
                     nodes, tags = [end], []
                     while nodes[-1] not in start_ids:
                         previous_node, edge_tags = previous[nodes[-1]]
