@@ -90,6 +90,32 @@ sollten geprüfte Länder-ZIPs anschließend als GitHub-Release veröffentlicht
 oder in den vorgesehenen Objektspeicher kopiert werden. Die großen
 Datenprodukte werden absichtlich nicht in Git committed.
 
+## Optionaler sicherer Serverimport
+
+Der Workflow **Gipfelaufstiege aller Länder erzeugen** kann die geprüfte
+Ausgabe direkt in den zusätzlichen Gipfelrouten-Katalog von BergChronik
+importieren. Das ist absichtlich nur über den manuellen Schalter
+**Nach erfolgreicher Prüfung in den BergChronik-Zusatzkatalog importieren**
+möglich.
+
+Vor dem ersten Import müssen im Repository unter **Settings -> Secrets and
+variables -> Actions** diese Secrets hinterlegt werden:
+
+| Secret | Inhalt |
+| --- | --- |
+| `BERGCHRONIK_SSH_HOST` | Hostname oder IP-Adresse des Produktionsservers |
+| `BERGCHRONIK_SSH_USER` | dedizierter SSH-Deploy-Benutzer |
+| `BERGCHRONIK_SSH_PORT` | SSH-Port, falls nicht `22` |
+| `BERGCHRONIK_SSH_PRIVATE_KEY` | privater Schlüssel dieses Deploy-Benutzers |
+| `BERGCHRONIK_SSH_KNOWN_HOSTS` | verifizierter `ssh-keyscan`-Eintrag des Servers |
+
+Der Deploy-Benutzer benötigt ausschließlich kennwortloses `sudo` für das
+Ablegen unter `/srv/import` und für den fest vorgegebenen Aufruf von
+`/opt/bergchronik/scripts/import-summit-routes.php`. Kein Secret und keine
+Routendaten werden in Git gespeichert. Der Workflow kopiert die Datei zuerst
+temporär, prüft sie mit `--dry-run` und importiert sie erst danach in
+`/var/lib/bergchronik/tourdata/bergchronik-summit-routes.sqlite`.
+
 ## Verarbeitung
 
 Der Workflow verwendet ausschließlich bereits auf `ubuntu-latest`

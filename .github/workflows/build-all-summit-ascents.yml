@@ -9,6 +9,11 @@ on:
         default: ALL
         type: choice
         options: [ALL, AT, DE, CH, IT]
+      deploy_to_server:
+        description: "Nach erfolgreicher Pruefung in den BergChronik-Zusatzkatalog importieren"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -59,7 +64,40 @@ jobs:
             --country "$COUNTRY" \
             --tile-degrees 2.0 \
             --buffer-km 20.0
+      - name: Zusatzkatalog sicher auf den Produktionsserver importieren
+        if: inputs.deploy_to_server
+        env:
+          SSH_HOST: ${{ secrets.BERGCHRONIK_SSH_HOST }}
+          SSH_USER: ${{ secrets.BERGCHRONIK_SSH_USER }}
+          SSH_PORT: ${{ secrets.BERGCHRONIK_SSH_PORT }}
+          SSH_PRIVATE_KEY: ${{ secrets.BERGCHRONIK_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.BERGCHRONIK_SSH_KNOWN_HOSTS }}
+          COUNTRY: ${{ matrix.country }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+          : "${SSH_HOST:?GitHub Secret BERGCHRONIK_SSH_HOST fehlt.}"
+          : "${SSH_USER:?GitHub Secret BERGCHRONIK_SSH_USER fehlt.}"
+          : "${SSH_PRIVATE_KEY:?GitHub Secret BERGCHRONIK_SSH_PRIVATE_KEY fehlt.}"
+          : "${SSH_KNOWN_HOSTS:?GitHub Secret BERGCHRONIK_SSH_KNOWN_HOSTS fehlt.}"
+          port="${SSH_PORT:-22}"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          remote_tmp="/tmp/summit-ascents-${COUNTRY}-${RUN_ID}.geojsonseq"
+          remote_input="/srv/import/summit-ascents-${COUNTRY}.geojsonseq"
+          scp -P "$port" -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+            "output/summit-ascents-${COUNTRY}.geojsonseq" \
+            "${SSH_USER}@${SSH_HOST}:${remote_tmp}"
+          ssh -p "$port" -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes "${SSH_USER}@${SSH_HOST}" \
+            "sudo -n install -d -o root -g www-data -m 750 /srv/import && \
+             sudo -n install -o root -g www-data -m 640 '${remote_tmp}' '${remote_input}' && \
+             rm -f '${remote_tmp}' && \
+             sudo -n -u www-data php /opt/bergchronik/scripts/import-summit-routes.php --input='${remote_input}' --database=/var/lib/bergchronik/tourdata/bergchronik-summit-routes.sqlite --dry-run && \
+             sudo -n -u www-data php /opt/bergchronik/scripts/import-summit-routes.php --input='${remote_input}' --database=/var/lib/bergchronik/tourdata/bergchronik-summit-routes.sqlite"
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: summit-ascents-${{ matrix.country }}-${{ github.run_id }}
           path: output/*.geojsonseq
