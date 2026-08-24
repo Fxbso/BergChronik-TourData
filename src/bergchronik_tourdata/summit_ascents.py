@@ -40,15 +40,11 @@ def build_summit_ascent(input_path: Path, output_path: Path, country: str, peak_
     peak = peaks[0]
     peak_position = (peak.lat, peak.lon)
     radius = max(5_000.0, min(float(radius_km) * 1000.0, 60_000.0))
-    coordinates: dict[int, tuple[float, float]] = {}
     starts: set[int] = set()
     for node in PbfReader(input_path).tagged_nodes():
-        position = (node.lat, node.lon)
-        if not _within(position, peak_position, radius):
-            continue
-        coordinates[node.osm_id] = position
-        if any(node.tags.get(key) == value for key, value in STARTS):
+        if _within((node.lat, node.lon), peak_position, radius) and any(node.tags.get(key) == value for key, value in STARTS):
             starts.add(node.osm_id)
+    coordinates = {node_id: (lat, lon) for node_id, lat, lon in PbfReader(input_path).all_nodes() if _within((lat, lon), peak_position, radius)}
     graph: dict[int, list[tuple[int, float, dict[str, str]]]] = {}
     for way in PbfReader(input_path).tagged_ways():
         if way.tags.get("highway") not in WALKABLE or way.tags.get("foot") == "no" or way.tags.get("access") in {"private", "no"}:

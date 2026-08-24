@@ -388,6 +388,19 @@ class PbfReader:
                         elif number == 3 and wire_type == 2 and isinstance(value, bytes): values = _packed(value)
                     yield Node(node.osm_id, node.lat, node.lon, _tags(keys, values, strings))
 
+    def all_nodes(self) -> Iterator[tuple[int, float, float]]:
+        """Stream every coordinate, including compact dense OSM nodes."""
+        for block_type, payload in _blocks(self.path):
+            if block_type != "OSMData":
+                continue
+            _, groups, granularity, lat_offset, lon_offset = _primitive_block(payload)
+            for group in groups:
+                for node_data in _message_values(group, 1):
+                    node = _plain_node(node_data, granularity, lat_offset, lon_offset)
+                    yield node.osm_id, node.lat, node.lon
+                for dense_data in _message_values(group, 2):
+                    yield from _dense_nodes(dense_data, granularity, lat_offset, lon_offset)
+
     def tagged_ways(self) -> Iterator[Way]:
         for block_type, payload in _blocks(self.path):
             if block_type != "OSMData":

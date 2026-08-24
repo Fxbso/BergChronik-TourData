@@ -27,6 +27,9 @@ class _Reader:
             Way(10, (2, 3, 4, 1), {"highway": "path", "sac_scale": "T4", "climbing:grade:uiaa": "II"}),
         ])
 
+    def all_nodes(self):
+        return iter([(1, 47.0000, 12.0000), (2, 46.9980, 12.0000), (3, 46.9990, 12.0000), (4, 46.9997, 12.0000)])
+
 
 class SummitAscentTest(unittest.TestCase):
     def test_creates_an_ascent_that_reaches_the_peak_and_keeps_uiaa(self):
