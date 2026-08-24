@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import struct
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 
@@ -29,6 +29,15 @@ class Relation:
 class Way:
     osm_id: int
     node_refs: tuple[int, ...]
+    tags: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Node:
+    osm_id: int
+    lat: float
+    lon: float
+    tags: dict[str, str] = field(default_factory=dict)
 
 
 def _read_varint(data: bytes | memoryview, offset: int) -> tuple[int, int]:
@@ -240,15 +249,21 @@ def _parse_relation(data: bytes, strings: tuple[str, ...]) -> Relation:
     return Relation(osm_id, _tags(keys, values, strings), tuple(members))
 
 
-def _parse_way(data: bytes) -> Way:
+def _parse_way(data: bytes, strings: tuple[str, ...]) -> Way:
     osm_id = 0
+    keys: list[int] = []
+    values: list[int] = []
     refs: list[int] = []
     for number, wire_type, value in _fields(data):
         if number == 1 and wire_type == 0 and isinstance(value, int):
             osm_id = _signed_64(value)
+        elif number == 2 and wire_type == 2 and isinstance(value, bytes):
+            keys = _packed(value)
+        elif number == 3 and wire_type == 2 and isinstance(value, bytes):
+            values = _packed(value)
         elif number == 8 and wire_type == 2 and isinstance(value, bytes):
             refs = _delta(_packed(value, zigzag=True))
-    return Way(osm_id, tuple(refs))
+    return Way(osm_id, tuple(refs), _tags(keys, values, strings))
 
 
 def _dense_nodes(
@@ -280,22 +295,24 @@ def _plain_node(
     granularity: int,
     lat_offset: int,
     lon_offset: int,
-) -> tuple[int, float, float]:
+) -> Node:
     osm_id = 0
+    keys: list[int] = []
+    values: list[int] = []
     lat = 0
     lon = 0
     for number, wire_type, value in _fields(data):
         if number == 1 and wire_type == 0 and isinstance(value, int):
             osm_id = _zigzag(value)
+        elif number == 2 and wire_type == 2 and isinstance(value, bytes):
+            keys = _packed(value)
+        elif number == 3 and wire_type == 2 and isinstance(value, bytes):
+            values = _packed(value)
         elif number == 8 and wire_type == 0 and isinstance(value, int):
             lat = _zigzag(value)
         elif number == 9 and wire_type == 0 and isinstance(value, int):
             lon = _zigzag(value)
-    return (
-        osm_id,
-        1e-9 * (lat_offset + granularity * lat),
-        1e-9 * (lon_offset + granularity * lon),
-    )
+    return Node(osm_id, 1e-9 * (lat_offset + granularity * lat), 1e-9 * (lon_offset + granularity * lon), {})
 
 
 class PbfReader:
@@ -320,10 +337,10 @@ class PbfReader:
                 return
             if block_type != "OSMData":
                 continue
-            _, groups, _, _, _ = _primitive_block(payload)
+            strings, groups, _, _, _ = _primitive_block(payload)
             for group in groups:
                 for way_data in _message_values(group, 3):
-                    way = _parse_way(way_data)
+                    way = _parse_way(way_data, strings)
                     if way.osm_id in remaining:
                         remaining.remove(way.osm_id)
                         yield way
@@ -343,9 +360,9 @@ class PbfReader:
                     node = _plain_node(
                         node_data, granularity, lat_offset, lon_offset
                     )
-                    if node[0] in remaining:
-                        remaining.remove(node[0])
-                        yield node
+                    if node.osm_id in remaining:
+                        remaining.remove(node.osm_id)
+                        yield node.osm_id, node.lat, node.lon
                 for dense_data in _message_values(group, 2):
                     for node in _dense_nodes(
                         dense_data, granularity, lat_offset, lon_offset
@@ -353,3 +370,29 @@ class PbfReader:
                         if node[0] in remaining:
                             remaining.remove(node[0])
                             yield node
+
+    def tagged_nodes(self) -> Iterator[Node]:
+        """Stream ordinary tagged nodes; dense nodes without tags stay omitted."""
+        for block_type, payload in _blocks(self.path):
+            if block_type != "OSMData":
+                continue
+            strings, groups, granularity, lat_offset, lon_offset = _primitive_block(payload)
+            for group in groups:
+                for node_data in _message_values(group, 1):
+                    node = _plain_node(node_data, granularity, lat_offset, lon_offset)
+                    # Reparse tags here because plain nodes carry their own string IDs.
+                    keys: list[int] = []
+                    values: list[int] = []
+                    for number, wire_type, value in _fields(node_data):
+                        if number == 2 and wire_type == 2 and isinstance(value, bytes): keys = _packed(value)
+                        elif number == 3 and wire_type == 2 and isinstance(value, bytes): values = _packed(value)
+                    yield Node(node.osm_id, node.lat, node.lon, _tags(keys, values, strings))
+
+    def tagged_ways(self) -> Iterator[Way]:
+        for block_type, payload in _blocks(self.path):
+            if block_type != "OSMData":
+                continue
+            strings, groups, _, _, _ = _primitive_block(payload)
+            for group in groups:
+                for way_data in _message_values(group, 3):
+                    yield _parse_way(way_data, strings)

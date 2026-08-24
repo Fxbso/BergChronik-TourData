@@ -1,0 +1,45 @@
+name: Gipfelaufstieg erzeugen
+
+on:
+  workflow_dispatch:
+    inputs:
+      country:
+        description: Land des Gipfels
+        required: true
+        type: choice
+        options: [AT, DE, CH, IT]
+      peak:
+        description: Exakter Gipfelname in OpenStreetMap
+        required: true
+        type: string
+      radius_km:
+        description: Suchradius im OSM-Fußnetz
+        required: true
+        default: "30"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - name: Geofabrik-Extrakt laden
+        env:
+          COUNTRY: ${{ inputs.country }}
+        run: |
+          case "$COUNTRY" in AT) slug=austria;; DE) slug=germany;; CH) slug=switzerland;; IT) slug=italy;; esac
+          mkdir -p data output
+          curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 -o "data/$COUNTRY.osm.pbf" "https://download.geofabrik.de/europe/$slug-latest.osm.pbf"
+      - name: Aufstieg aus Fußwegenetz berechnen
+        env:
+          PYTHONPATH: src
+        run: python -m bergchronik_tourdata summit-ascent --input "data/${{ inputs.country }}.osm.pbf" --output "output/summit-ascents-${{ inputs.country }}.geojsonseq" --country "${{ inputs.country }}" --peak "${{ inputs.peak }}" --radius-km "${{ inputs.radius_km }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: summit-ascent-${{ inputs.country }}-${{ github.run_id }}
+          path: output/*.geojsonseq
+          retention-days: 14
