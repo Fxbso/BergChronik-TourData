@@ -16,19 +16,26 @@ class _Reader:
 
     def tagged_nodes(self):
         return iter([
-            Node(1, 47.0000, 12.0000, {"natural": "peak", "name": "Testgipfel"}),
-            Node(2, 46.9970, 12.0000, {"amenity": "parking"}),
-            Node(3, 46.9985, 12.0000, {}),
-            Node(4, 46.9997, 12.0000, {}),
+            Node(1, 47.0000, 12.0000, {"natural": "peak", "name": "Testgipfel", "ele": "2400"}),
+            Node(2, 46.9920, 12.0000, {"amenity": "parking", "name": "Talparkplatz", "ele": "1200"}),
+            Node(3, 46.9960, 12.0000, {}),
+            Node(4, 46.9985, 12.0000, {}),
+            Node(5, 46.9997, 12.0000, {"tourism": "information", "information": "guidepost", "name": "Gipfelwegweiser"}),
         ])
 
     def tagged_ways(self):
         return iter([
-            Way(10, (2, 3, 4, 1), {"highway": "path", "sac_scale": "alpine_hiking", "via_ferrata_scale": "3-", "climbing:grade:uiaa": "II"}),
+            Way(10, (2, 3, 4, 5, 1), {"highway": "path", "sac_scale": "alpine_hiking", "via_ferrata_scale": "3-", "climbing:grade:uiaa": "II"}),
+            Way(20, (6, 7, 8, 9, 6), {"natural": "glacier"}),
         ])
 
     def all_nodes(self):
-        return iter([(1, 47.0000, 12.0000), (2, 46.9970, 12.0000), (3, 46.9985, 12.0000), (4, 46.9997, 12.0000)])
+        return iter([
+            (1, 47.0000, 12.0000), (2, 46.9920, 12.0000), (3, 46.9960, 12.0000),
+            (4, 46.9985, 12.0000), (5, 46.9997, 12.0000),
+            (6, 46.9980, 11.9995), (7, 46.9980, 12.0005), (8, 46.9990, 12.0005),
+            (9, 46.9990, 11.9995),
+        ])
 
 
 class SummitAscentTest(unittest.TestCase):
@@ -42,6 +49,10 @@ class SummitAscentTest(unittest.TestCase):
         self.assertEqual(feature["properties"]["sac_scale"], "T4")
         self.assertEqual(feature["properties"]["via_ferrata_scale"], "B/C")
         self.assertIn("requires_climbing", feature["properties"]["safety_flags"])
+        self.assertEqual(feature["properties"]["start_name"], "Talparkplatz")
+        self.assertEqual(feature["properties"]["start_kind"], "parking")
+        self.assertEqual(feature["properties"]["peak_elevation_m"], 2400)
+        self.assertGreater(feature["properties"]["distance_m"], 500)
         self.assertFalse(feature["properties"]["roundtrip"])
         self.assertEqual(feature["geometry"]["coordinates"][-1], [12.0, 47.0])
 
@@ -54,3 +65,5 @@ class SummitAscentTest(unittest.TestCase):
         self.assertEqual(features[0]["properties"]["peak_name"], "Testgipfel")
         self.assertFalse(features[0]["properties"]["roundtrip"])
         self.assertIn("requires_climbing", features[0]["properties"]["safety_flags"])
+        self.assertIn("requires_glacier", features[0]["properties"]["safety_flags"])
+        self.assertEqual(features[0]["properties"]["glacier_status"], "mapped_intersection")
